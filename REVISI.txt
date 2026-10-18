@@ -1,0 +1,135 @@
+HIGHLIGHT
+Kosong (Ilham) : 51, 154, 212, 215
+
+EDA
+Tidak semua gambar ukurane sama. Asumsi yang kita lakukan adalah kita bahwasannya kita bisa me-list ukuran (resolusi) dari setiap gambar test sehingga bisa diberikan perlakuan yang berbeda
+Dari beberapa gambar yang aku lihat manual, beberapa gambar dari jalan yang bolong adalah bukan terbuat dari aspal melainkan paving block sehingga asumsi yang kupunya adalah kerusakan yang ada agak susah terdeteksi. Jadi aku ingin melihat jenis dari tiap jalan pada data test sebelum memberikan perlakuan tertentu
+Dari poin nomer 2, kalau beberapa jalan tidak terbuat dari aspal, sehingga sulit mengidentifikasi kerusakan (sebagai contoh pada paving blok, pergeseran pada paving blok dinilai sebagai normal meskipun celah yg seharusnya ada tidak sebesar itu, dan juga pada paving blok ada cekungan di bawah tapi tetap tidak dideteksi sebagai kerusakan)
+
+
+Anomali train images:
+train_57 : Bolong tapi bawahnya ada paving
+train_111 : Bolong tapid ditutupi batu gede
+Banyak yang dimana jalan rusak tapi digenangi air
+Ada beberapa jalan yang bolong tapi juga punya retakan yang menyebar (Ex train_144)
+Ada yang warnanya tidak terlalu berbeda (tidak kontras) dengan jalan yang benar (Ex train_145)
+Ada yang bolong dan dicor tapi rusak lagi (Ex train_214)
+Ada yang sebenernya adalah manhole cover, tapi jalan di sekitarnya rusak
+Ada yang rusak, bukan bolong tapi pecah-pecah
+Ada yang rusak dan ditutupi dengan pasir (tapi asumsiku bakal mudah terdeteksi karena kontras dengan jalan, Ex train_405)
+Ada yang tidak rusak dan cuma ada manhole di tengah
+Ada yang jalan tanah dan tergenang air
+
+Anomali test :
+test_224 : Paving blok yang ada cekungan dan ada tanaman
+test_235 : Jalan rusak digenangi air + ditumbuhi rumput
+
+
+Dari anomali yg kucari secara manual, mask yang ada pada data train sangat sangat akurat apabila dilakukan overlay terhadap gambar aslinya
+
+
+REVISI GEDE
+Preprocessiing
+a. Resize : Mengubah semua gambar jadi 256x256. Kelemahan: Gambar panorama jadi gepeng, lubang bulat jadi lonjong. Model gagal belajar bentuk
+b. Random Crop: Mengambil potongan acak 256x256. Kelemahan: Kehilangan konteks global (model tidak tahu itu di pinggir jalan atau tengah)
+c. Letterbox / Pad-to-Square : Mengecilkan sisi terpanjang ke target (misal 384 atau 512), lalu mengisi sisa ruang kosong dengan hitam. Keunggulan: Bentuk lubang tetap proporsional
+Augmentasi
+Wajib ada :
+a. Geometri HorizontalFlip, VerticalFlip, RandomRotate90 : mengajarkan model bahwa lubang jalan tidak punya orientasi "atas-bawah" yang pasti.
+b. Distorsi (Paving/Jalan Rusak):
+GridDistortion atau ElasticTransform: Mengubah jalan lurus menjadi bergelombang. Ini membantu model mengenali jalan rusak yang permukaannya tidak rata dan
+ShiftScaleRotate: Simulasi zoom in/out kamera.
+c. Warna dan Cahaya :
+CLAHE : Meningkatkan kontras lokal. Sangat ampuh untuk jalan aspal yang warnanya abu-abu monoton
+HueSaturationValue : Mengubah warna aspal sedikit (misal kemerahan/kebiruan) agar model tidak menghafal warna "abu-abu", tapi menghafal "tekstur".
+d. Advanced (Untuk Paving Block) :
+CoarseDropout / Cutout: Melubangi gambar input dengan kotak hitam.
+Logika: Jika ada lubang di atas paving block, dan sebagian paving tertutup kotak hitam, model dipaksa melihat pola retakan di pinggirnya. Ini mencegah model hanya menghafal "pola kotak-kotak paving".
+Modeling (Arsitektur + Backbone)
+Arsitektur :
+a. U-Net (Standar Emas): Pilihan paling aman. Cepat, efisien, akurasi tinggi untuk segmentasi biner.
+b. U-Net++ (Nested U-Net): Versi upgrade dari U-Net.
+Keunggulan: Lebih jago menangkap objek dengan ukuran bervariasi (lubang kecil vs lubang raksasa) berkat fitur skip connections yang padat.
+Rekomendasi: Bisa dicoba sebagai model kedua untuk Ensemble.
+c. DeepLabV3+: Bagus untuk konteks global, tapi seringkali kurang presisi di bagian pinggir (border) objek dibanding U-Net.
+Backbone :
+a. ResNet34 (Baseline Kuat): Ringan, cukup pintar. (Ini yang kita pakai sekarang).
+b. EfficientNet-B3 / B4 (Akurasi Tinggi): Biasanya memberikan skor lebih tinggi daripada ResNet karena arsitekturnya lebih modern, tapi training lebih lambat.
+c. MiT-B2 (SegFormer Encoder): Berbasis Transformer. Sangat kuat menangkap konteks global (misal: membedakan jalan vs bahu jalan), tapi kadang berat di memori.
+Strategi Saya: Mulai dengan U-Net ResNet34. Jika waktu cukup, latih juga U-Net++ EfficientNet-B4, lalu gabungkan hasilnya (Ensemble).
+Training Loop
+Loss Function:
+a. Jangan pakai BCE saja (model malas, nanti outputnya hitam semua).
+b. Jangan pakai Dice saja (tidak stabil).
+c. Rekomendasi: Combo Loss (0.5 BCE + 0.5 Dice). Atau Lovasz Loss (ini senjata rahasia Kaggle untuk memaksimalkan metrik IoU/Dice secara langsung).
+Validasi:
+Stratified K-Fold: Karena jumlah lubang di tiap gambar beda-beda (ada yang kosong, ada yang banyak), pastikan pembagian Fold adil. Namun, standar 5-Fold Random Split biasanya sudah cukup oke untuk data 500 gambar.
+
+Inference
+a. TTA (Test-Time Augmentation) - D4 Group:
+Seperti diskusi kita: 8 views (Original, Rot90, Rot180, Rot270, dan versi Flip-nya).
+Ini WAJIB untuk mengatasi masalah variasi bentuk lubang.
+b. Adaptive Resize (Kebalikan Pre-processing):
+Model memprediksi di ukuran kotak (misal 384x384).
+Hasil prediksi (mask) harus di-crop padding-nya, lalu di-resize balik ke ukuran asli gambar tes.
+PostProcessing
+a. Remove Small Blobs (Morphology):
+Masalah: Celah antar paving block sering terdeteksi sebagai titik-titik putih kecil (noise).
+Solusi: Hapus semua area putih yang luasnya di bawah min_size (misal < 50 piksel). Ini akan membersihkan prediksi "sampah" dan menyisakan lubang asli yang besar.
+b. Convex Hull (Opsional - Hati-hati):
+Ide: Lubang jalan biasanya satu kesatuan. Jika prediksinya bolong-bolong (retak), bisa kita "tambal" jadi satu area penuh.
+Risiko: Bisa kebablasan menambal area yang bukan lubang. Gunakan hanya jika modelmu prediksinya pecah-pecah.
+Ensemble
+a. Teknik: Latih 3 model berbeda arsitektur:
+U-Net + ResNet34 (Ukuran 384)
+U-Net++ + EfficientNet-B4 (Ukuran 384)
+U-Net + ResNeSt50 (Ukuran 384)
+b. Aksi: Saat prediksi, rata-rata hasil probabilitas dari ketiga model tersebut sebelum di-threshold.
+c. Kenapa? ResNet mungkin salah liat paving, tapi EfficientNet mungkin benar. Suara terbanyak menang.
+
+
+
+KESIMPULAN & URUTAN EKSEKUSI
+Fix Preprocessing: Implementasi LongestMaxSize + PadIfNeeded (Wajib untuk rasio aspek). Naikkan IMG_SIZE ke 384.
+2. Fix Augmentasi: Tambahkan GridDistortion dan CoarseDropout (Wajib untuk paving/tekstur).
+3. Training Dasar: Latih U-Net ResNet34 dengan 5-Fold CV.
+4. Evaluasi Visual: Cek hasil validasi Fold 1. Apakah dia masih salah di paving? Jika ya, perberat augmentasi distorsi.
+5. Inference: Gunakan TTA 8-Arah + Resize Balik + Hapus Small Blobs.
+6. (Jika Waktu Cukup): Latih model kedua (misal EfficientNet-B0 atau B3) dan lakukan Ensemble.
+
+
+OPSI TAMBAHAN :
+Lovasz-Softmax Loss : Tadi kita bahas Combo Loss (BCE + Dice). Itu sudah bagus. Tapi ada "Senjata Pamungkas" untuk segmentasi: Lovász Loss.
+Kenapa: Metrik kompetisi ini adalah Dice Score (atau IoU/Jaccard). BCE mengoptimalkan pixel, Dice Loss mengoptimalkan overlap, tapi Lovász Loss secara matematis didesain untuk mengoptimalkan Jaccard Index secara langsung menggunakan metode convex surrogate.
+
+
+a. Juri A (U-Net + ResNet34) : submission_grandmaster
+Hasil Kaggle : 0.68858
+Hasil Fold pada kolab :
+ 	Fold 0: 0.7676
+ 	Fold 1: 0.8041
+ 	Fold 2: 0.7374
+ 	Fold 3: 0.7660
+ 	Fold 4: 0.7741
+
+b. Juri B (U-Net++ + EfficientNet-B4) : submission_UnetPlusPlus_efficientnet-b4
+Hasil Kaggle : 0.70773
+Hasil Fold pada kolab :
+ 	Fold 0: 0.7898
+ 	Fold 1: 0.7952
+ 	Fold 2: 0.7487
+ 	Fold 3: 0.7719
+ 	Fold 4: 0.7934
+
+c. Juri C (DeepLabV3Plus + timm-resnest50d) :
+Hasil Kaggle : 0.68609
+Hasil Fold pada kolab :
+ 	Fold 0: 0.7841
+ 	Fold 1: 0.7771
+ 	Fold 2: 0.7479
+ 	Fold 3: 0.7639
+ 	Fold 4: 0.7757
+
+
+
+Barangkali pada model yang akan di ensemble menggunakan loss function lovasz-Softmaz Loss

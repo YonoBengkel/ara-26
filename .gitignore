@@ -1,0 +1,9 @@
+# Citra lomba (517 MB) tidak ikut: datanya milik penyelenggara, bukan milik repo ini.
+dataset/
+
+# Artefak lokal
+.vscode/
+.ipynb_checkpoints/
+__pycache__/
+*.pth
+*.pt
